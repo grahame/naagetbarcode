@@ -5,6 +5,9 @@ import sys
 import requests
 import itertools
 import subprocess
+import threading
+import queue
+from multiprocessing import cpu_count
 
 
 class NAABarcodeAccess:
@@ -52,32 +55,51 @@ class NAABarcodeAccess:
             parts.append(fname)
         return parts
 
-    def jpeg_to_pdf(self, barcode, page, jpeg):
-        pre_ocr = self.barcode_filename(barcode, "tmp_preocr_{}.pdf".format(page))
-        post_ocr = self.barcode_filename(barcode, "ocr_{}.pdf".format(page))
-        if not os.access(post_ocr, os.R_OK):
-            subprocess.check_output(["convert", jpeg, pre_ocr])
-            subprocess.check_output(["ocrmypdf", pre_ocr, post_ocr])
-            os.unlink(pre_ocr)
-        return post_ocr
+    def ocr_pages(self, barcode, tasks):
+        q = queue.Queue()
+        # lists are threadsafe in cPython, at least
+        results = []
+
+        def worker():
+            while True:
+                page, jpeg = q.get()
+                pfx = self.barcode_filename(barcode, "ocr_{}".format(page))
+                pdf = pfx + ".pdf"
+                if not os.access(pdf, os.R_OK):
+                    subprocess.check_output(["tesseract", "-l", "eng", jpeg, pfx, "pdf"])
+                if not os.access(pdf, os.R_OK):
+                    raise Exception("tesseract failed: {}".format(pdf))
+                results.append((page, pdf))
+                q.task_done()
+
+        for i in range(cpu_count()):
+            threading.Thread(target=worker, daemon=True).start()
+
+        for task in tasks:
+            q.put(task)
+
+        q.join()
+
+        assert(len(results) == len(tasks))
+        return [pdf for (page, pdf) in sorted(results)]
+        return pdf
 
     def grab_pdfs(self, barcode):
         """
         not only PDF, but OCRed (with ocrmypdf)
         """
-        parts = []
+        jpegs = []
         self.mkdir(self.barcode_dir(barcode))
-        for i in itertools.count(1):
-            jpeg = self.grab_jpeg(barcode, i)
+        for page in itertools.count(1):
+            jpeg = self.grab_jpeg(barcode, page)
             if jpeg is None:
                 break
-            pdf = self.jpeg_to_pdf(barcode, i, jpeg)
-            parts.append(pdf)
-        return parts
+            jpegs.append((page, jpeg))
+        return self.ocr_pages(barcode, jpegs)
 
     def grab_pdf(self, barcode):
         pdfs = self.grab_pdfs(barcode)
-        fname = self.barcode_filename(barcode, "merged_ocr.pdf")
+        fname = self.barcode_filename(barcode, "{} ocr.pdf")
         subprocess.check_output(["pdftk"] + pdfs + ["cat", "output", fname])
 
 
