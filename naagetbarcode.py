@@ -60,20 +60,22 @@ class NAABarcodeAccess:
         # lists are threadsafe in cPython, at least
         results = []
 
-        def worker():
+        def worker(worker_id):
             while True:
                 page, jpeg = q.get()
+                print("{:.1%} worker {} starting on page {}".format(len(results) / len(tasks), worker_id, page))
                 pfx = self.barcode_filename(barcode, "ocr_{}".format(page))
                 pdf = pfx + ".pdf"
+                tmppfx = pfx + ".tmp"
+                tmppdf = pfx + ".tmp.pdf"
                 if not os.access(pdf, os.R_OK):
-                    subprocess.check_output(["tesseract", "-l", "eng", jpeg, pfx, "pdf"])
-                if not os.access(pdf, os.R_OK):
-                    raise Exception("tesseract failed: {}".format(pdf))
+                    subprocess.check_output(["tesseract", "-l", "eng", jpeg, tmppfx, "pdf"])
+                    os.rename(tmppdf, pdf)
                 results.append((page, pdf))
                 q.task_done()
 
         for i in range(cpu_count()):
-            threading.Thread(target=worker, daemon=True).start()
+            threading.Thread(target=worker, args=(i,), daemon=True).start()
 
         for task in tasks:
             q.put(task)
@@ -99,7 +101,7 @@ class NAABarcodeAccess:
 
     def grab_pdf(self, barcode):
         pdfs = self.grab_pdfs(barcode)
-        fname = self.barcode_filename(barcode, "{} ocr.pdf")
+        fname = self.barcode_filename(barcode, "{}_ocr.pdf".format(barcode))
         subprocess.check_output(["pdftk"] + pdfs + ["cat", "output", fname])
 
 
