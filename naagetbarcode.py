@@ -4,6 +4,7 @@ import os
 import sys
 import requests
 import itertools
+import subprocess
 
 
 class NAABarcodeAccess:
@@ -51,11 +52,39 @@ class NAABarcodeAccess:
             parts.append(fname)
         return parts
 
+    def jpeg_to_pdf(self, barcode, page, jpeg):
+        pre_ocr = self.barcode_filename(barcode, "tmp_preocr_{}.pdf".format(page))
+        post_ocr = self.barcode_filename(barcode, "ocr_{}.pdf".format(page))
+        if not os.access(post_ocr, os.R_OK):
+            subprocess.check_output(["convert", jpeg, pre_ocr])
+            subprocess.check_output(["ocrmypdf", pre_ocr, post_ocr])
+            os.unlink(pre_ocr)
+        return post_ocr
+
+    def grab_pdfs(self, barcode):
+        """
+        not only PDF, but OCRed (with ocrmypdf)
+        """
+        parts = []
+        self.mkdir(self.barcode_dir(barcode))
+        for i in itertools.count(1):
+            jpeg = self.grab_jpeg(barcode, i)
+            if jpeg is None:
+                break
+            pdf = self.jpeg_to_pdf(barcode, i, jpeg)
+            parts.append(pdf)
+        return parts
+
+    def grab_pdf(self, barcode):
+        pdfs = self.grab_pdfs(barcode)
+        fname = self.barcode_filename(barcode, "merged_ocr.pdf")
+        subprocess.check_output(["pdftk"] + pdfs + ["cat", "output", fname])
+
 
 def main():
     barcode = sys.argv[1]
     access = NAABarcodeAccess()
-    access.grab_jpegs(barcode)
+    access.grab_pdf(barcode)
 
 
 if __name__ == "__main__":
